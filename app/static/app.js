@@ -353,9 +353,36 @@ async function renderDetail() {
     const assigning = ticket.status === "pending_assignment";
     const options = candidates.filter((user) => assigning || user.id !== ticket.assignee_id)
       .map((user) => [user.id, `${user.display_name}（${user.id}）`]);
-    if (options.length) actionForm(box, assigning ? "分派工单" : "改派工单", assigning ? "assignments" : "reassignments",
-      [{ name: "assignee_id", label: "处理人", options }, ...(assigning ? [] : [reason])]);
-    else box.append(element("p", "当前组没有可用的候选处理人。", "muted"));
+    if (assigning) {
+      if (options.length) actionForm(box, "分派工单", "assignments",
+        [{ name: "assignee_id", label: "处理人", options }]);
+      else box.append(element("p", "当前组没有可用的候选处理人。", "muted"));
+    } else {
+      const assignee = candidates.find((user) => user.id === ticket.assignee_id);
+      const progress = ticket.status === "pending_acceptance" ? "等待接单" : "正在处理";
+      box.append(element("p", `已分派给 ${assignee?.display_name || ticket.assignee_id}，${progress}。`));
+      if (options.length) {
+        const editor = element("div");
+        editor.id = "reassignment-editor";
+        editor.hidden = true;
+        function showEditor(open) {
+          editor.hidden = !open;
+          changeAssignee.setAttribute("aria-expanded", String(open));
+          if (open) editor.querySelector("select").focus();
+          else changeAssignee.focus();
+        }
+        const changeAssignee = button("改派", () => showEditor(editor.hidden));
+        changeAssignee.setAttribute("aria-expanded", "false");
+        changeAssignee.setAttribute("aria-controls", editor.id);
+        actionForm(editor, "改派工单", "reassignments",
+          [{ name: "assignee_id", label: "处理人", options }, reason]);
+        editor.append(button("取消改派", () => {
+          editor.querySelector("form").reset();
+          showEditor(false);
+        }));
+        box.append(changeAssignee, editor);
+      } else box.append(element("p", "当前组没有其他可用的候选处理人。", "muted"));
+    }
   }
   if (handler && ticket.status === "pending_acceptance") actionForm(box, "接单", "accept");
   if (handler && ticket.status === "in_progress") {
