@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      IT／行政服务台
+    </title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/app.js" defer>
+    </script>
+  </head>
+  <body>
+    <main>
+      <section id="login-panel" class="login-shell">
+        <div class="login-brand">
+          <span class="brand-mark">
+            S
+          </span>
+          企业服务中心
+        </div>
+        <div class="login-intro">
+          <span class="eyebrow">
+            SERVICE DESK
+          </span>
+          <h1>
+            让每一个问题
+            <br>
+            都有处理进展。
+          </h1>
+          <p>
+            IT 支持与行政服务，在一个工作台中协同处理。
+          </p>
+          <div class="login-features">
+            <span>
+              统一受理
+            </span>
+            <span>
+              流程追踪
+            </span>
+            <span>
+              服务评价
+            </span>
+          </div>
+        </div>
+        <section class="login card">
+          <span class="environment">
+            本地测试环境
+          </span>
+          <h2>
+            进入服务工作台
+          </h2>
+          <p class="muted">
+            选择测试身份，查看对应的工单与待办。
+          </p>
+          <form id="login-form">
+            <fieldset>
+              <label>
+                测试账号
+                <select name="username" id="test-accounts" required>
+                  <option value="">
+                    正在加载测试账号…
+                  </option>
+                </select>
+              </label>
+              <button type="submit">
+                进入工作台 →
+              </button>
+            </fieldset>
+          </form>
+          <p class="login-note">
+            测试阶段免密码登录，刷新页面后需重新选择账号。
+          </p>
+        </section>
+      </section>
+      <div id="workspace" class="app-shell" hidden>
+        <aside class="sidebar">
+          <div class="brand">
+            <span class="brand-mark">
+              S
+            </span>
+            <div>
+              企业服务台
+              <small>
+                IT
+                &
+                ADMIN
+              </small>
+            </div>
+          </div>
+          <p class="nav-label">
+            工作空间
+          </p>
+          <nav class="side-nav" aria-label="工作台导航">
+            <button id="nav-tickets" type="button" class="nav-item active" aria-current="page">
+              <span aria-hidden="true">
+                ▤
+              </span>
+              <span id="nav-ticket-label">
+                我的工单
+              </span>
+            </button>
+            <button id="nav-statistics" type="button" class="nav-item" hidden>
+              <span aria-hidden="true">
+                ▥
+              </span>
+              评价统计
+            </button>
+          </nav>
+          <div class="sidebar-bottom">
+            <span class="environment">
+              本地测试环境
+            </span>
+            <p>
+              IT 支持 · 行政服务
+            </p>
+          </div>
+        </aside>
+        <div class="app-content">
+          <header class="topbar">
+            <span class="breadcrumb">
+              服务中心
+              <span>
+                /
+              </span>
+              <strong id="breadcrumb-current">
+                我的工单
+              </strong>
+            </span>
+            <div class="account">
+              <span class="avatar" aria-hidden="true">
+                U
+              </span>
+              <div>
+                <strong id="identity">
+                </strong>
+                <small id="roles">
+                </small>
+              </div>
+              <button id="logout" class="text-button" type="button">
+                退出
+              </button>
+            </div>
+          </header>
+          <div class="content-area">
+            <div class="page-heading">
+              <div>
+                <span class="eyebrow">
+                  SERVICE WORKSPACE
+                </span>
+                <h1 id="page-title">
+                  我的工单
+                </h1>
+                <p id="page-description" class="muted">
+                  跟进每一张工单的处理进展。
+                </p>
+              </div>
+              <div class="buttons">
+                <button id="refresh" class="secondary" type="button">
+                  刷新
+                </button>
+                <button id="open-intake" type="button" hidden>
+                  ＋ 新建工单
+                </button>
+              </div>
+            </div>
+            <section id="ticket-section" class="card ticket-card">
+              <div class="section-heading">
+                <div>
+                  <h2>
+                    工单列表
+                    <span id="total" class="count">
+                    </span>
+                  </h2>
+                  <p class="muted">
+                    当前账号授权范围内的工单
+                  </p>
+                </div>
+                <span class="live-label">
+                  <i>
+                  </i>
+                  业务工作区
+                </span>
+              </div>
+              <form id="filter-form" class="filters">
+                <label class="search-label">
+                  <span class="sr-only">
+                    搜索标题或完整工单编号
+                  </span>
+                  <input id="search" name="q" maxlength="200" placeholder="搜索标题或完整工单编号">
+                </label>
+                <label>
+                  <span class="sr-only">
+                    工单状态
+                  </span>
+                  <select id="status-filter" name="status">
+                    <option value="">
+                      全部状态
+                    </option>
+                    <option value="pending_assignment">
+                      待分派
+                    </option>
+                    <option value="pending_acceptance">
+                      待接单
+                    </option>
+                    <option value="in_progress">
+                      处理中
+                    </option>
+                    <option value="awaiting_confirmation">
+                      待员工确认
+                    </option>
+                    <option value="closed">
+                      已关闭
+                    </option>
+                    <option value="cancelled">
+                      已撤销
+                    </option>
+                  </select>
+                </label>
+                <label>
+                  <span class="sr-only">
+                    运维系统
+                  </span>
+                  <select id="system-filter" name="service_system_id">
+                    <option value="">
+                      全部运维系统
+                    </option>
+                  </select>
+                </label>
+                <button type="submit" class="secondary">
+                  查询
+                </button>
+                <button id="reset-filters" type="button" class="text-button">
+                  重置
+                </button>
+              </form>
+              <div class="table-scroll">
+                <table class="ticket-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">
+                        工单标题 / 编号
+                      </th>
+                      <th scope="col">
+                        状态
+                      </th>
+                      <th scope="col">
+                        运维系统
+                      </th>
+                      <th scope="col">
+                        当前处理人
+                      </th>
+                      <th scope="col">
+                        更新时间
+                      </th>
+                      <th scope="col">
+                        操作
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody id="ticket-list">
+                  </tbody>
+                </table>
+              </div>
+              <nav class="pagination" aria-label="工单分页">
+                <span class="muted">
+                  每页 10 条
+                </span>
+                <div class="buttons">
+                  <button id="previous" class="secondary" type="button">
+                    上一页
+                  </button>
+                  <span id="page">
+                  </span>
+                  <button id="next" class="secondary" type="button">
+                    下一页
+                  </button>
+                </div>
+              </nav>
+            </section>
+            <section id="statistics" class="card" hidden>
+            </section>
+            <footer>
+              企业服务台 · 时间统一按北京时间显示
+            </footer>
+          </div>
+        </div>
+      </div>
+      <p id="message" role="status" aria-live="polite" hidden>
+      </p>
+      <dialog id="intake" class="drawer" aria-labelledby="intake-title">
+        <div class="drawer-heading">
+          <div>
+            <span class="eyebrow">
+              NEW REQUEST
+            </span>
+            <h2 id="intake-title">
+              新建工单
+            </h2>
+          </div>
+          <button id="close-intake" type="button" class="secondary">
+            关闭
+          </button>
+        </div>
+        <div class="drawer-body">
+          <p class="muted">
+            填写问题信息，提交后可在工单列表中跟进。
+          </p>
+          <form id="ticket-form">
+            <fieldset>
+              <label>
+                运维系统
+                <span class="required">
+                  *
+                </span>
+                <select name="service_system_id" id="systems" required>
+                </select>
+              </label>
+              <label>
+                工单标题
+                <span class="required">
+                  *
+                </span>
+                <input name="title" placeholder="简要描述需要协助的问题" required maxlength="200">
+              </label>
+              <label>
+                问题描述
+                <span class="required">
+                  *
+                </span>
+                <textarea name="description" placeholder="请说明问题现象、发生时间及影响范围" required maxlength="10000" rows="7"></textarea>
+              </label>
+              <div class="buttons">
+                <button type="submit" id="submit-ticket">
+                  提交工单
+                </button>
+                <button id="new-conversation" type="button" class="secondary">
+                  开始新会话
+                </button>
+              </div>
+            </fieldset>
+          </form>
+          <p id="conversation-info" class="context-note">
+            新会话将在首次提交时创建。
+          </p>
+        </div>
+      </dialog>
+      <dialog id="detail-dialog" class="drawer detail-drawer" aria-labelledby="detail-title">
+        <div class="drawer-heading">
+          <h2 id="detail-title">
+            工单详情
+          </h2>
+          <button id="close-detail" type="button" class="secondary">
+            关闭
+          </button>
+        </div>
+        <section id="detail" class="drawer-body detail">
+        </section>
+      </dialog>
+    </main>
+  </body>
+</html>
