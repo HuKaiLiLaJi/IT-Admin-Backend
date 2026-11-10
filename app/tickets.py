@@ -35,6 +35,7 @@ class TicketRequest(BaseModel):
     service_system_id: Identifier
     title: Title
     description: Description
+    location: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
 
 
 class ActionRequest(BaseModel):
@@ -203,7 +204,7 @@ def create_ticket(
            title, description, department, email, location, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ticket_id, conversation_id, user.id, body.service_system_id, system["group_id"],
-         body.title, body.description, user.department, user.email, user.location, now, now),
+         body.title, body.description, user.department, user.email, body.location or user.location, now, now),
     )
     connection.execute(
         """INSERT INTO ticket_history (ticket_id, action, actor_id, from_status, to_status, created_at)

@@ -15,6 +15,12 @@ class InterfaceTests(HTTPTestCase):
                 self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
                 self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
                 self.assertIn(marker, response.read().decode('utf-8'))
+        with self.opener.open(self.url + '/', timeout=5) as response:
+            html = response.read().decode('utf-8')
+            for marker in ('提单人信息', '提报信息', 'intake-submitter', 'intake-department',
+                           'intake-email', 'name="location"', '测试基地 A', 'intake-engineer',
+                           'intake-attachments', 'save-intake-draft'):
+                self.assertIn(marker, html)
         with self.opener.open(self.url + '/docs', timeout=5) as response:
             self.assertEqual(response.status, 200)
             self.assertIsNone(response.headers.get('Content-Security-Policy'))

@@ -288,7 +288,7 @@
       </div>
       <p id="message" role="status" aria-live="polite" hidden>
       </p>
-      <dialog id="intake" class="drawer" aria-labelledby="intake-title">
+      <dialog id="intake" class="drawer intake-drawer" aria-labelledby="intake-title">
         <div class="drawer-heading">
           <div>
             <span class="eyebrow">
@@ -308,6 +308,41 @@
           </p>
           <form id="ticket-form">
             <fieldset>
+              <legend class="intake-section-title">提单人信息</legend>
+              <div class="intake-profile">
+                <label>
+                  提单人 <span class="required">*</span>
+                  <input id="intake-submitter" readonly aria-describedby="intake-profile-note">
+                </label>
+                <label>
+                  提单人部门
+                  <input id="intake-department" readonly>
+                </label>
+                <label>
+                  提单人邮箱
+                  <input id="intake-email" readonly>
+                </label>
+                <label>
+                  提单人 Base 地
+                  <select id="intake-location" name="location" aria-describedby="intake-location-note">
+                    <option value="">请选择（可选）</option>
+                    <option value="测试基地 A">测试基地 A</option>
+                    <option value="测试基地 B">测试基地 B</option>
+                  </select>
+                </label>
+              </div>
+              <p id="intake-profile-note" class="intake-hint">人员资料由当前登录账号带入。</p>
+              <p id="intake-location-note" class="intake-hint">Base 地选项为测试占位，正式内容待确认。</p>
+            </fieldset>
+            <fieldset>
+              <legend class="intake-section-title">提报信息</legend>
+              <label>
+                IT 工程师
+                <select id="intake-engineer" disabled aria-describedby="intake-engineer-note">
+                  <option>提交后由分派人员指定</option>
+                </select>
+              </label>
+              <p id="intake-engineer-note" class="intake-hint">工程师选择位置已预留，当前使用人工分派流程。</p>
               <label>
                 运维系统
                 <span class="required">
@@ -317,27 +352,36 @@
                 </select>
               </label>
               <label>
-                工单标题
+                标题
                 <span class="required">
                   *
                 </span>
                 <input name="title" placeholder="简要描述需要协助的问题" required maxlength="200">
               </label>
               <label>
-                问题描述
+                描述
                 <span class="required">
                   *
                 </span>
                 <textarea name="description" placeholder="请说明问题现象、发生时间及影响范围" required maxlength="10000" rows="7"></textarea>
               </label>
+              <label>
+                相关文档附件
+                <input type="file" id="intake-attachments" disabled aria-describedby="intake-attachments-note">
+              </label>
+              <p id="intake-attachments-note" class="intake-hint">附件入口为界面占位，上传功能待接入。</p>
               <div class="buttons">
                 <button type="submit" id="submit-ticket">
                   提交工单
+                </button>
+                <button id="save-intake-draft" type="button" class="secondary">
+                  存为草稿
                 </button>
                 <button id="new-conversation" type="button" class="secondary">
                   开始新会话
                 </button>
               </div>
+              <p class="intake-hint">草稿仅保留在当前页面，刷新或退出后清除。</p>
             </fieldset>
           </form>
           <p id="conversation-info" class="context-note">

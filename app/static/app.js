@@ -116,6 +116,16 @@ function newConversation(previousTicket = null) {
   message(previousTicket ? "已准备关联旧单的新会话，请填写新工单。" : "已准备新会话，请填写新工单。");
 }
 
+function updateIntakeProfile() {
+  for (const [id, value] of [["intake-submitter", state.user.display_name],
+    ["intake-department", state.user.department], ["intake-email", state.user.email]]) {
+    $(id).value = value || "";
+    $(id).defaultValue = value || "";
+  }
+  $("intake-location").options[0].textContent = state.user.location
+    ? `使用账号 Base 地（${state.user.location}）` : "请选择（可选）";
+}
+
 async function loadList() {
   const query = new URLSearchParams({ limit: 10, ...state.filters });
   query.set("offset", state.offset);
@@ -186,6 +196,7 @@ async function loadStatistics() {
 
 async function refresh() {
   state.user = await api("/api/v1/me");
+  updateIntakeProfile();
   $("identity").textContent = state.user.display_name;
   $("roles").textContent = state.user.roles.map((role) => roleNames[role] || role).join(" · ");
   $("open-intake").hidden = !hasRole("submitter");
@@ -341,7 +352,7 @@ async function renderDetail() {
     ["处理组", ticket.group_id], ["版本", String(ticket.version)], ["创建时间", timeText(ticket.created_at)],
     ["接单时间", timeText(ticket.accepted_at)], ["关闭时间", timeText(ticket.closed_at)],
     ["撤销时间", timeText(ticket.cancelled_at)], ["部门", ticket.department], ["邮箱", ticket.email],
-    ["地点", ticket.location], ["关联旧单", ticket.previous_ticket_id]]);
+    ["提单人 Base 地", ticket.location], ["关联旧单", ticket.previous_ticket_id]]);
   box.append(element("h3", "问题描述"), element("p", ticket.description, "prose"));
   box = actions;
   const own = hasRole("submitter") && ticket.submitter_id === state.user.id;
@@ -490,6 +501,10 @@ $("open-intake").addEventListener("click", () => {
   $("message").hidden = true;
 });
 $("close-intake").addEventListener("click", () => $("intake").close());
+$("save-intake-draft").addEventListener("click", () => {
+  $("intake").close();
+  message("草稿已保留在当前页面，刷新或退出后清除。");
+});
 $("close-detail").addEventListener("click", () => $("detail-dialog").close());
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("close", () => {

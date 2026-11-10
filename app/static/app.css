@@ -90,6 +90,14 @@ footer { padding: 24px 0 0; text-align: center; color: #a0aaba; font-size: 10px;
 .drawer { position: fixed; inset: 0 0 0 auto; margin: 0; max-height: none; height: 100dvh; width: min(560px, 100%); max-width: 100%; border: 0; padding: 0; color: #26334a; background: white; box-shadow: -12px 0 40px #182d4c15; }
 .drawer::backdrop { background: #14223959; }
 .detail-drawer { width: min(800px, 100%); }
+.intake-drawer { width: min(900px, 100%); }
+.intake-profile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.intake-section-title { width: 100%; padding: 0 0 12px; margin-bottom: 20px; border-bottom: 1px solid var(--border); font-size: 15px; font-weight: 500; color: #315b98; }
+#ticket-form fieldset + fieldset { margin-top: 28px; }
+.intake-hint { font-size: 12px; line-height: 1.6; color: #7c889a; margin: -8px 0 18px; }
+#ticket-form input[readonly], #ticket-form :disabled { background: #f7f9fc; color: #68788f; opacity: 1; }
+#ticket-form .buttons + .intake-hint { margin-top: 12px; }
+@media (max-width: 700px) { .intake-profile { grid-template-columns: minmax(0, 1fr); } }
 .drawer-heading { position: sticky; top: 0; z-index: 1; background: white; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 28px; }
 .drawer-heading h2 { margin: 4px 0 0; }
 .drawer-heading button { font-size: 12px; }

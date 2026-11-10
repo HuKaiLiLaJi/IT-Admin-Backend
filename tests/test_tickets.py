@@ -27,6 +27,30 @@ class TicketHTTPTestCase(HTTPTestCase):
 
 
 class TicketTests(TicketHTTPTestCase):
+    def test_intake_base_location_is_saved_without_changing_account_or_retry(self):
+        token = self.login()
+        with connect(self.path) as connection, connection:
+            connection.execute("UPDATE users SET location = '账号基地' WHERE username = 'submitter'")
+        conversation_id = self.conversation(token)
+        url = f"/api/v1/conversations/{conversation_id}/ticket"
+        body = {"service_system_id": "test-office", "title": "测试标题", "description": "测试描述"}
+        for invalid in ("x" * 201, 123, ["测试基地 A"]):
+            self.assertEqual(self.request(url, "POST", {**body, "location": invalid}, token)[0], 422)
+        status, ticket, _ = self.request(url, "POST", {**body, "location": " 测试基地 A "}, token)
+        self.assertEqual(status, 201)
+        self.assertEqual(ticket["location"], "测试基地 A")
+        self.assertEqual(self.request("/api/v1/me", token=token)[1]["location"], "账号基地")
+        status, retry, _ = self.request(url, "POST", {**body, "location": "测试基地 B"}, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(retry, ticket)
+        self.assertEqual(self.ticket(token)["location"], "账号基地")
+        for location in ("", "  ", None):
+            conversation_id = self.conversation(token)
+            status, result, _ = self.request(f"/api/v1/conversations/{conversation_id}/ticket", "POST",
+                                             {**body, "location": location}, token)
+            self.assertEqual(status, 201)
+            self.assertEqual(result["location"], "账号基地")
+
     def test_list_filters_preserve_visibility_and_pagination_totals(self):
         token = self.login()
         other = self.login("submitter_other")
