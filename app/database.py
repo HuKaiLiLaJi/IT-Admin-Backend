@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "backend.sqlite3"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = (
     """CREATE TABLE users (
@@ -253,3 +253,6 @@ def initialize_database(path: Path) -> None:
             for statement in IAM_SCHEMA:
                 connection.execute(statement)
             connection.execute("PRAGMA user_version = 7")
+        if version < 8:
+            connection.execute("ALTER TABLE tickets ADD COLUMN priority TEXT CHECK (priority IN ('P1', 'P3'))")
+            connection.execute("PRAGMA user_version = 8")

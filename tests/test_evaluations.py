@@ -222,6 +222,7 @@ class EvaluationTests(TicketHTTPTestCase):
             destination.execute('DROP TABLE evaluation_history')
             destination.execute('DROP TABLE ticket_evaluations')
             destination.execute('DROP INDEX tickets_closed')
+            destination.execute('ALTER TABLE tickets DROP COLUMN priority')
             destination.execute('PRAGMA user_version = 4')
         broken = Path(self.directory.name) / 'broken.sqlite3'
         with connect(legacy) as source, connect(broken) as destination, destination:

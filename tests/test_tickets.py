@@ -4,6 +4,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
+from unittest.mock import patch
 
 from app.auth import get_connection
 from app.database import SCHEMA, SCHEMA_VERSION, connect, initialize_database
@@ -28,6 +29,140 @@ class TicketHTTPTestCase(HTTPTestCase):
 
 
 class TicketTests(TicketHTTPTestCase):
+    def test_legacy_number_format_daily_reset_and_restart(self):
+        token = self.login()
+        before_midnight = int(datetime.fromisoformat('2026-11-11T23:59:59+08:00').timestamp())
+        with patch('app.tickets.time') as clock:
+            clock.time.return_value = before_midnight
+            first = self.ticket(token)
+            second = self.ticket(token, system='test-facility')
+            self.assertEqual(first['id'], 'IT202611110001')
+            self.assertEqual(second['id'], 'IT202611110002')
+            self.assertEqual(second['ticket_id'], second['id'])
+            self.stop_server()
+            self.start_server()
+            self.assertEqual(self.ticket(token)['id'], 'IT202611110003')
+            clock.time.return_value = before_midnight + 1
+            next_day = self.ticket(token)
+            self.assertEqual(next_day['id'], 'IT202611120001')
+            retry = self.request(f"/api/v1/conversations/{first['conversation_id']}/ticket", 'POST', {
+                'service_system_id': 'test-office', 'title': '重试', 'description': '跨天重试',
+            }, token)
+            self.assertEqual(retry[:2], (200, first))
+        result = self.request('/api/v1/tickets?' + urlencode({'q': first['id']}), token=token)[1]
+        self.assertEqual([item['id'] for item in result['items']], [first['id']])
+
+    def test_existing_uuid_ticket_remains_accessible_and_linkable(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        legacy_id = '2af77124-f187-4cca-abef-23b5ab5a12e4'
+        with connect(self.path) as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            connection.execute('PRAGMA defer_foreign_keys = ON')
+            connection.execute('UPDATE tickets SET id = ? WHERE id = ?', (legacy_id, ticket['id']))
+            connection.execute('UPDATE ticket_history SET ticket_id = ? WHERE ticket_id = ?',
+                               (legacy_id, ticket['id']))
+        url = f'/api/v1/tickets/{legacy_id}'
+        self.assertEqual(self.request(url, token=token)[1]['id'], legacy_id)
+        self.assertEqual(self.request('/api/v1/tickets?q=' + legacy_id, token=token)[1]['total'], 1)
+        retry = self.request(f"/api/v1/conversations/{ticket['conversation_id']}/ticket", 'POST', {
+            'service_system_id': 'test-office', 'title': '重试', 'description': '保留旧编号',
+        }, token)
+        self.assertEqual((retry[0], retry[1]['id']), (200, legacy_id))
+        cancelled = self.request(url + '/cancel', 'POST', {
+            'expected_version': 1, 'reason': '旧编号兼容验证',
+        }, token)
+        self.assertEqual(cancelled[0], 200, cancelled)
+        conversation = self.conversation(token, legacy_id)
+        self.assertEqual(self.request(f'/api/v1/conversations/{conversation}', token=token)[1]['previous_ticket_id'], legacy_id)
+        self.assertRegex(self.ticket(token)['id'], r'^IT\d{12}$')
+
+    def test_concurrent_distinct_conversations_allocate_unique_numbers(self):
+        token = self.login()
+        conversations = [self.conversation(token) for _ in range(8)]
+        barrier = threading.Barrier(8)
+
+        def submit(conversation):
+            barrier.wait(timeout=15)
+            return self.request(f'/api/v1/conversations/{conversation}/ticket', 'POST', {
+                'service_system_id': 'test-office', 'title': '并发编号', 'description': '独立会话',
+            }, token)
+
+        with patch('app.tickets.time') as clock:
+            clock.time.return_value = int(datetime.fromisoformat('2026-11-11T12:00:00+08:00').timestamp())
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(submit, conversations))
+        self.assertTrue(all(result[0] == 201 for result in results), results)
+        self.assertEqual(sorted(result[1]['id'] for result in results),
+                         [f'IT20261111{number:04d}' for number in range(1, 9)])
+
+    def test_daily_number_exhaustion_returns_conflict_without_partial_ticket(self):
+        token = self.login()
+        with patch('app.tickets.time') as clock:
+            clock.time.return_value = int(datetime.fromisoformat('2026-11-11T12:00:00+08:00').timestamp())
+            ticket = self.ticket(token)
+            with connect(self.path) as connection, connection:
+                connection.execute('BEGIN IMMEDIATE')
+                connection.execute('PRAGMA defer_foreign_keys = ON')
+                connection.execute("UPDATE tickets SET id = 'IT202611119999' WHERE id = ?", (ticket['id'],))
+                connection.execute("UPDATE ticket_history SET ticket_id = 'IT202611119999' WHERE ticket_id = ?",
+                                   (ticket['id'],))
+            conversation = self.conversation(token)
+            response = self.request(f'/api/v1/conversations/{conversation}/ticket', 'POST', {
+                'service_system_id': 'test-office', 'title': '容量检查', 'description': '编号已用尽',
+            }, token)
+        self.assertEqual(response[0], 409)
+        self.assertEqual(response[1]['detail']['code'], 'ticket_number_exhausted')
+        with connect(self.path) as connection:
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM tickets').fetchone()[0], 1)
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_history').fetchone()[0], 1)
+
+    def test_priority_options_roundtrip_validation_and_retry(self):
+        token = self.login()
+        body = {'service_system_id': 'test-office', 'title': '优先级选项', 'description': '原文'}
+        for priority in (None, 'P1', 'P3'):
+            conversation = self.conversation(token)
+            path = f'/api/v1/conversations/{conversation}/ticket'
+            status, ticket, _ = self.request(path, 'POST', {**body, 'priority': priority}, token)
+            self.assertEqual(status, 201, ticket)
+            self.assertEqual(ticket['priority'], priority)
+            self.assertEqual(ticket['status'], 'pending_assignment')
+            self.assertIsNone(ticket['assignee_id'])
+            retry = self.request(path, 'POST', {**body, 'priority': 'P3'}, token)
+            self.assertEqual(retry[:2], (200, ticket))
+            detail = self.request(f"/api/v1/tickets/{ticket['id']}", token=token)[1]
+            self.assertEqual(detail['priority'], priority)
+            updated = self.request(f"/api/v1/tickets/{ticket['id']}/supplements", 'POST', {
+                'expected_version': 1, 'description': '员工补充',
+            }, token)[1]
+            self.assertEqual(updated['priority'], priority)
+        self.assertIsNone(self.ticket(token)['priority'])
+        items = self.request('/api/v1/tickets?scope=mine', token=token)[1]['items']
+        self.assertCountEqual([item['priority'] for item in items], [None, 'P1', 'P3', None])
+        path = f'/api/v1/conversations/{self.conversation(token)}/ticket'
+        for invalid in ('P2', '', 'p1', 1, True):
+            self.assertEqual(self.request(path, 'POST', {**body, 'priority': invalid}, token)[0], 422)
+
+    def test_v7_priority_migration_preserves_ticket_and_checks_values(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        legacy = Path(self.directory.name) / 'v7.sqlite3'
+        with connect(self.path) as source, connect(legacy) as destination, destination:
+            source.backup(destination)
+            destination.execute('ALTER TABLE tickets DROP COLUMN priority')
+            destination.execute('PRAGMA user_version = 7')
+            original = dict(destination.execute('SELECT * FROM tickets').fetchone())
+        initialize_database(legacy)
+        initialize_database(legacy)
+        with connect(legacy) as connection, connection:
+            migrated = dict(connection.execute('SELECT * FROM tickets').fetchone())
+            self.assertIsNone(migrated.pop('priority'))
+            self.assertEqual(migrated, original)
+            self.assertEqual(migrated['id'], ticket['id'])
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], SCHEMA_VERSION)
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("UPDATE tickets SET priority = 'P2'")
+
     def test_mine_scope_restricts_multirole_list_detail_and_pagination(self):
         token = self.login('dispatcher')
         other = self.login()

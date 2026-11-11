@@ -28,6 +28,7 @@ def open_when_ready(server, stopped, url):
 
 def main():
     os.environ.setdefault("IT_ADMIN_IAM_PASSWORDLESS", "1")
+    os.environ.setdefault("IT_ADMIN_TEST_EMPLOYEE_API", "1")
     config = PROJECT_ROOT / "IAM系统授权信息工单系统.md"
     if config.is_file():
         os.environ.setdefault("IT_ADMIN_IAM_CONFIG", str(config))

@@ -12,6 +12,14 @@ MAX_FILES = 5
 MAX_FILE_SIZE = 10 * 1024 * 1024
 MAX_REQUEST_SIZE = MAX_FILES * MAX_FILE_SIZE + 64 * 1024
 FILE_COLUMNS = "id AS file_id, file_name, size, content_type, created_at"
+UPLOAD_OPENAPI = {
+    'requestBody': {'required': True, 'content': {'multipart/form-data': {'schema': {
+        'type': 'object', 'required': ['files'], 'properties': {
+            'files': {'type': 'array', 'minItems': 1, 'maxItems': MAX_FILES,
+                      'items': {'type': 'string', 'format': 'binary'}},
+        },
+    }}}},
+}
 
 
 def attachment_error(message: str, status: int = 422) -> HTTPException:

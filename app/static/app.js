@@ -12,7 +12,8 @@ const roleNames = { submitter: "提交人", dispatcher: "分派人员", handler:
 const actionNames = { created: "创建工单", assigned: "分派", reassigned: "改派", accepted: "接单",
   note_added: "公开处理备注", result_submitted: "提交处理结果", confirmed_unresolved: "确认未解决",
   confirmed_resolved: "确认解决并关闭", cancelled: "撤销工单", cancellation_requested: "申请撤销",
-  cancellation_approved: "批准撤销", cancellation_rejected: "驳回撤销", attachments_added: "追加附件" };
+  cancellation_approved: "批准撤销", cancellation_rejected: "驳回撤销", attachments_added: "追加附件",
+  supplement_added: "员工补充" };
 const ratingNames = { good: "好评", neutral: "中评", bad: "差评" };
 const decisionNames = { pending: "待审批", approved: "已批准", rejected: "已驳回", superseded: "工单已结束" };
 const sourceNames = { active: "员工主动评价", automatic: "到期自动好评" };
@@ -188,6 +189,7 @@ async function loadList() {
     title.append(button(ticket.title, open, "ticket-title"), element("small", ticket.id));
     const status = element("td");
     status.append(element("span", statusNames[ticket.status], `status status-${ticket.status}`));
+    if (ticket.priority) title.append(element("small", `优先级 ${ticket.priority}`));
     const operation = element("td");
     operation.append(button("查看", open, "text-button"));
     row.append(title, status,
@@ -379,11 +381,16 @@ async function renderDetail() {
   let box = overview;
   facts(box, [["工单编号", ticket.id], ["提交人", ticket.submitter_id], ["当前处理人", ticket.assignee_id],
     ["运维系统", state.systems.find((system) => system.id === ticket.service_system_id)?.name || ticket.service_system_id],
-    ["处理组", ticket.group_id], ["版本", String(ticket.version)], ["创建时间", timeText(ticket.created_at)],
+    ["优先级", ticket.priority], ["处理组", ticket.group_id], ["版本", String(ticket.version)], ["创建时间", timeText(ticket.created_at)],
     ["接单时间", timeText(ticket.accepted_at)], ["关闭时间", timeText(ticket.closed_at)],
     ["撤销时间", timeText(ticket.cancelled_at)], ["部门", ticket.department], ["邮箱", ticket.email],
     ["提单人 Base 地", ticket.location], ["关联旧单", ticket.previous_ticket_id]]);
   box.append(element("h3", "问题描述"), element("p", ticket.description, "prose"));
+  for (const entry of ticket.history.filter((event) => event.action === "supplement_added")) {
+    box.append(element("h3", "员工补充"),
+      element("p", `${entry.actor_id} · ${timeText(entry.created_at)}`, "muted"),
+      element("p", entry.note, "prose"));
+  }
   box.append(element("h3", "附件"));
   if (!ticket.files.length) box.append(element("p", "暂无附件。", "muted"));
   for (const file of ticket.files) {
@@ -394,24 +401,30 @@ async function renderDetail() {
   const own = hasRole("submitter") && ticket.submitter_id === state.user.id;
   if (own && !["closed", "cancelled"].includes(ticket.status)) {
     const form = element("form", null, "action-form");
-    const label = element("label", "追加附件（每次最多5个，单文件最多10 MiB）");
+    const descriptionLabel = element("label", "补充说明");
+    const description = element("textarea");
+    description.maxLength = 10000;
+    description.rows = 4;
+    descriptionLabel.append(description);
+    const label = element("label", "补充附件（每次最多5个，单文件最多10 MiB）");
     const input = element("input");
     input.type = "file";
     input.multiple = true;
-    input.required = true;
     label.append(input);
-    const submit = element("button", "追加附件");
+    const submit = element("button", "提交补充");
     submit.type = "submit";
-    form.append(label, submit);
+    form.append(descriptionLabel, label, submit);
     let uploaded = [];
     input.addEventListener("change", () => { uploaded = []; });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       run(async () => {
-        if (!uploaded.length) uploaded = await uploadFiles(input.files);
+        const text = description.value.trim();
+        if (!text && !input.files.length && !uploaded.length) throw new Error("请填写补充说明或选择附件");
+        if (input.files.length && !uploaded.length) uploaded = await uploadFiles(input.files);
         try {
-          await api(`${ticketPath(ticket.id)}/attachments`, "POST", {
-            expected_version: ticket.version, file_ids: uploaded,
+          await api(`${ticketPath(ticket.id)}/supplements`, "POST", {
+            expected_version: ticket.version, description: text || null, file_ids: uploaded,
           });
         } catch (error) {
           if (error.status === 409) await loadDetail(ticket.id);
@@ -419,7 +432,7 @@ async function renderDetail() {
         }
         await loadDetail(ticket.id);
         await loadList();
-        message("附件已追加到原工单。");
+        message("补充内容已保存到原工单。");
       });
     });
     box.append(form);
@@ -551,6 +564,7 @@ $("refresh-iam-profile").addEventListener("click", () => run(async () => {
 $("ticket-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.target));
+  if (!body.priority) delete body.priority;
   run(async () => {
     if (!state.conversation) state.conversation = await api("/api/v1/conversations", "POST",
       state.previousTicket ? { previous_ticket_id: state.previousTicket } : {});

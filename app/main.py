@@ -22,6 +22,7 @@ from app.database import database_path, initialize_database
 from app.seed import USERS
 from app.tickets import router as tickets_router
 from app.iam import IAMClient, IAMError, profile_status, refresh_profile, save_profile
+from app.employee_test_api import router as employee_test_router
 
 
 TEST_USERNAMES = tuple(user[0] for user in USERS)
@@ -46,7 +47,9 @@ def create_app(path: Path | None = None) -> FastAPI:
     application.state.database_path = selected_path
     application.state.iam_client = IAMClient.from_environment()
     application.state.iam_passwordless = os.environ.get("IT_ADMIN_IAM_PASSWORDLESS") == "1"
+    application.state.employee_test_api = os.environ.get("IT_ADMIN_TEST_EMPLOYEE_API") == "1"
     application.include_router(tickets_router)
+    application.include_router(employee_test_router)
     static_directory = Path(__file__).with_name("static")
     application.mount("/static", StaticFiles(directory=static_directory), name="static")
 

@@ -17,7 +17,7 @@ from app.auth import (
     require_group_scope, require_role,
 )
 from app.evaluations import evaluation_deadline, expiration_cutoff, save_evaluation
-from app.attachments import FILE_COLUMNS, MAX_FILES, bind_files, read_uploads, ticket_files
+from app.attachments import FILE_COLUMNS, MAX_FILES, UPLOAD_OPENAPI, bind_files, read_uploads, ticket_files
 
 
 router = APIRouter(prefix="/api/v1")
@@ -40,6 +40,7 @@ class TicketRequest(BaseModel):
     service_system_id: Identifier
     title: Title
     description: Description
+    priority: Literal['P1', 'P3'] | None = None
     location: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
     file_ids: list[Identifier] = Field(default_factory=list, max_length=MAX_FILES)
 
@@ -56,6 +57,11 @@ class AssignmentRequest(ActionRequest):
 
 class AttachmentRequest(ActionRequest):
     file_ids: list[Identifier] = Field(min_length=1, max_length=MAX_FILES)
+
+
+class SupplementRequest(ActionRequest):
+    description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=10000)] | None = None
+    file_ids: list[Identifier] = Field(default_factory=list, max_length=MAX_FILES)
 
 
 class NoteRequest(ActionRequest):
@@ -222,14 +228,26 @@ def create_ticket(
         raise HTTPException(status_code=422, detail={
             "code": "invalid_service_system", "message": "请选择有效的测试运维系统",
         })
-    ticket_id = str(uuid4())
     now = int(time.time())
+    prefix = 'IT' + datetime.fromtimestamp(now, BEIJING_TIME).strftime('%Y%m%d')
+    # Submitter holds BEGIN IMMEDIATE, serializing allocation with ticket/history writes.
+    latest = connection.execute(
+        "SELECT id FROM tickets WHERE id GLOB ? ORDER BY id DESC LIMIT 1",
+        (prefix + '[0-9]' * 4,),
+    ).fetchone()
+    sequence = int(latest['id'][-4:]) + 1 if latest is not None else 1
+    if sequence > 9999:
+        raise HTTPException(status_code=409, detail={
+            'code': 'ticket_number_exhausted', 'message': '当日工单编号已用完，请联系管理员',
+        })
+    ticket_id = f'{prefix}{sequence:04d}'
     connection.execute(
         """INSERT INTO tickets (id, conversation_id, submitter_id, service_system_id, group_id,
-           title, description, department, email, location, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           title, description, department, email, location, created_at, updated_at, priority)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (ticket_id, conversation_id, user.id, body.service_system_id, system["group_id"],
-         body.title, body.description, user.department, user.email, body.location or user.location, now, now),
+         body.title, body.description, user.department, user.email, body.location or user.location, now, now,
+         body.priority),
     )
     connection.execute(
         """INSERT INTO ticket_history (ticket_id, action, actor_id, from_status, to_status, created_at)
@@ -398,14 +416,7 @@ def save_action(
     return ticket_response(connection.execute(TICKET_SELECT + " WHERE t.id = ?", (ticket["id"],)).fetchone())
 
 
-@router.post("/attachments", status_code=201, openapi_extra={
-    "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
-        "type": "object", "required": ["files"], "properties": {
-            "files": {"type": "array", "minItems": 1, "maxItems": MAX_FILES,
-                      "items": {"type": "string", "format": "binary"}},
-        },
-    }}}},
-})
+@router.post("/attachments", status_code=201, openapi_extra=UPLOAD_OPENAPI)
 async def upload_attachments(
     request: Request, user: CurrentUser, connection: Database,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -416,18 +427,24 @@ async def upload_attachments(
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         user = mutation_submitter(get_current_user(connection, credentials))
-        items = []
-        for name, content_type, content in uploads:
-            file_id = str(uuid4())
-            connection.execute(
-                """INSERT INTO attachments (id, owner_id, file_name, content_type, size, content, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (file_id, user.id, name, content_type, len(content), content, int(time.time())),
-            )
-            items.append(dict(connection.execute(
-                f"SELECT {FILE_COLUMNS} FROM attachments WHERE id = ?", (file_id,),
-            ).fetchone()))
+        items = save_uploads(connection, user, uploads)
     return {"items": items}
+
+
+def save_uploads(connection: sqlite3.Connection, user: Principal, uploads: list[tuple[str, str, bytes]]) -> list[dict]:
+    # Caller owns the transaction and rechecks the employee after acquiring its lock.
+    items = []
+    for name, content_type, content in uploads:
+        file_id = str(uuid4())
+        connection.execute(
+            """INSERT INTO attachments (id, owner_id, file_name, content_type, size, content, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (file_id, user.id, name, content_type, len(content), content, int(time.time())),
+        )
+        items.append(dict(connection.execute(
+            f"SELECT {FILE_COLUMNS} FROM attachments WHERE id = ?", (file_id,),
+        ).fetchone()))
+    return items
 
 
 @router.get("/attachments/{file_id}")
@@ -457,6 +474,24 @@ def append_attachments(ticket_id: str, body: AttachmentRequest, user: ActionUser
     if added:
         result = save_action(connection, ticket, user, "attachments_added", ticket["status"],
                              ticket["assignee_id"], f"追加{added}个附件")
+    return {**result, "files": ticket_files(connection, ticket_id)}
+
+
+@router.post("/tickets/{ticket_id}/supplements")
+def add_supplement(ticket_id: str, body: SupplementRequest, user: ActionUser, connection: Database):
+    ticket = action_ticket(connection, user, ticket_id)
+    require_ticket_submitter(ticket, user)
+    check_action(ticket, body.expected_version,
+                 ("pending_assignment", "pending_acceptance", "in_progress", "awaiting_confirmation"))
+    if not body.description and not body.file_ids:
+        raise HTTPException(status_code=422, detail={
+            "code": "empty_supplement", "message": "请填写补充说明或选择附件",
+        })
+    added = bind_files(connection, body.file_ids, user.id, ticket_id)
+    result = ticket_response(ticket)
+    if body.description or added:
+        result = save_action(connection, ticket, user, "supplement_added", ticket["status"],
+                             ticket["assignee_id"], body.description or f"追加{added}个附件")
     return {**result, "files": ticket_files(connection, ticket_id)}
 
 

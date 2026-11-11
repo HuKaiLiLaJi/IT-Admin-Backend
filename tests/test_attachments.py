@@ -160,6 +160,93 @@ class AttachmentTests(TicketHTTPTestCase):
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM tickets').fetchone()[0], 1)
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_history').fetchone()[0], 1)
 
+    def test_supplement_text_and_files_preserve_original_and_survive_restart(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        file_id = self.upload(token)[1]['items'][0]['file_id']
+        path = f"/api/v1/tickets/{ticket['id']}/supplements"
+        body = {'expected_version': 1, 'description': '  补充现场现象\n第二行  ', 'file_ids': [file_id]}
+        status, updated, _ = self.request(path, 'POST', body, token)
+        self.assertEqual(status, 200, updated)
+        self.assertEqual((updated['version'], updated['status'], updated['description']),
+                         (2, ticket['status'], ticket['description']))
+        self.assertEqual(updated['files'][0]['file_id'], file_id)
+        self.assertEqual(self.request(path, 'POST', body, token)[0], 409)
+        self.stop_server()
+        self.start_server()
+        detail = self.request(f"/api/v1/tickets/{ticket['id']}", token=token)[1]
+        event = detail['history'][-1]
+        self.assertEqual((event['action'], event['actor_id'], event['note']),
+                         ('supplement_added', ticket['submitter_id'], '补充现场现象\n第二行'))
+        self.assertIsInstance(event['created_at'], int)
+        self.assertEqual(detail['files'], updated['files'])
+        updated = self.request(path, 'POST', {'expected_version': 2, 'description': '再次补充'}, token)[1]
+        self.assertEqual(updated['version'], 3)
+        # Binding only files already on this ticket is a no-op at the latest version.
+        updated = self.request(path, 'POST', {'expected_version': 3, 'file_ids': [file_id]}, token)[1]
+        self.assertEqual(updated['version'], 3)
+
+    def test_supplement_validation_permissions_and_allowed_states(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        path = f"/api/v1/tickets/{ticket['id']}/supplements"
+        valid = {'expected_version': 1, 'description': '补充'}
+        self.assertEqual(self.request(path, 'POST', valid)[0], 401)
+        self.assertEqual(self.request(path, 'POST', valid, self.login('submitter_other'))[0], 404)
+        self.assertEqual(self.request(path, 'POST', valid, self.login('dispatcher'))[0], 403)
+        for fields in ({}, {'description': ' \n '}, {'description': None}, {'description': 123},
+                       {'description': 'x' * 10001}, {'file_ids': ['x'] * 6}):
+            self.assertEqual(self.request(path, 'POST', {'expected_version': 1, **fields}, token)[0], 422)
+        for current in ('pending_assignment', 'pending_acceptance', 'in_progress', 'awaiting_confirmation'):
+            with connect(self.path) as connection, connection:
+                connection.execute('UPDATE tickets SET status = ? WHERE id = ?', (current, ticket['id']))
+                version = connection.execute('SELECT version FROM tickets WHERE id = ?', (ticket['id'],)).fetchone()[0]
+            status, updated, _ = self.request(path, 'POST', {
+                'expected_version': version, 'description': 'x' * 10000,
+            }, token)
+            self.assertEqual(status, 200, updated)
+            self.assertEqual(updated['status'], current)
+            self.assertEqual(updated['result_round'], 0)
+        for terminal in ('closed', 'cancelled'):
+            with connect(self.path) as connection, connection:
+                connection.execute('UPDATE tickets SET status = ? WHERE id = ?', (terminal, ticket['id']))
+            self.assertEqual(self.request(path, 'POST', {
+                **valid, 'expected_version': updated['version'],
+            }, token)[0], 409)
+
+    def test_supplement_atomicity_and_file_ownership(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        file_id = self.upload(token)[1]['items'][0]['file_id']
+        other_file = self.upload(self.login('submitter_other'))[1]['items'][0]['file_id']
+        path = f"/api/v1/tickets/{ticket['id']}/supplements"
+        body = {'expected_version': 1, 'description': '补充原文', 'file_ids': [file_id]}
+        for ids in ([file_id, other_file], [file_id, 'missing'], [file_id, file_id]):
+            self.assertEqual(self.request(path, 'POST', {**body, 'file_ids': ids}, token)[0], 422)
+        with connect(self.path) as connection, connection:
+            connection.execute("""CREATE TRIGGER fail_supplement BEFORE INSERT ON ticket_history
+                WHEN NEW.action = 'supplement_added' BEGIN SELECT * FROM missing_supplement_table; END""")
+        self.assertEqual(self.request(path, 'POST', body, token)[0], 503)
+        with connect(self.path) as connection, connection:
+            self.assertIsNone(connection.execute('SELECT ticket_id FROM attachments WHERE id = ?', (file_id,)).fetchone()[0])
+            self.assertEqual(connection.execute('SELECT version FROM tickets').fetchone()[0], 1)
+            self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_history').fetchone()[0], 1)
+            connection.execute('DROP TRIGGER fail_supplement')
+        self.assertEqual(self.request(path, 'POST', body, token)[0], 200)
+
+    def test_concurrent_supplements_allow_one_version_update(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        path = f"/api/v1/tickets/{ticket['id']}/supplements"
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(lambda text: self.request(path, 'POST', {
+                'expected_version': 1, 'description': text,
+            }, token)[0], ['补充一', '补充二']))
+        self.assertCountEqual(responses, [200, 409])
+        with connect(self.path) as connection:
+            self.assertEqual(connection.execute('SELECT version FROM tickets').fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM ticket_history WHERE action = 'supplement_added'").fetchone()[0], 1)
+
     def test_upload_database_failure_rolls_back_entire_batch(self):
         token = self.login()
         with connect(self.path) as connection, connection:
@@ -191,6 +278,7 @@ class AttachmentTests(TicketHTTPTestCase):
             source.backup(destination)
             destination.execute('DROP TABLE iam_profiles')
             destination.execute('DROP TABLE attachments')
+            destination.execute('ALTER TABLE tickets DROP COLUMN priority')
             destination.execute('PRAGMA user_version = 5')
         broken = Path(self.directory.name) / 'broken.sqlite3'
         with connect(legacy) as source, connect(broken) as destination, destination:

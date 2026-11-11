@@ -219,6 +219,7 @@ class IAMTests(HTTPTestCase):
         with connect(self.path) as source, connect(legacy) as destination, destination:
             source.backup(destination)
             destination.execute("DROP TABLE iam_profiles")
+            destination.execute("ALTER TABLE tickets DROP COLUMN priority")
             destination.execute("PRAGMA user_version = 6")
         broken = Path(self.directory.name) / "broken.sqlite3"
         with connect(legacy) as source, connect(broken) as destination, destination:

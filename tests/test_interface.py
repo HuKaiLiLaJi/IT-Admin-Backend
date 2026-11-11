@@ -19,7 +19,8 @@ class InterfaceTests(HTTPTestCase):
             html = response.read().decode('utf-8')
             for marker in ('提单人信息', '提报信息', 'intake-submitter', 'intake-department',
                            'intake-email', 'name="location"', '测试基地 A', 'intake-engineer',
-                           'intake-attachments', 'save-intake-draft'):
+                           'intake-attachments', 'save-intake-draft', 'name="priority"',
+                           'value="P1"', 'value="P3"'):
                 self.assertIn(marker, html)
         with self.opener.open(self.url + '/docs', timeout=5) as response:
             self.assertEqual(response.status, 200)
