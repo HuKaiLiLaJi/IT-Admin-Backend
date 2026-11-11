@@ -3,7 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from app.database import SCHEMA, TICKET_SCHEMA, connect, initialize_database
+from app.database import SCHEMA, SCHEMA_VERSION, TICKET_SCHEMA, connect, initialize_database
 from tests.test_tickets import TicketHTTPTestCase
 
 
@@ -47,7 +47,12 @@ class TicketResolutionTests(TicketHTTPTestCase):
         self.stop_server()
         self.start_server()
         self.assertEqual(self.detail(ticket)['status'], 'awaiting_confirmation')
-        ticket = self.success(ticket, 'confirmations', self.submitter, result_round=1, outcome='unresolved')
+        for invalid_note in (123, 'x' * 10001):
+            self.assertEqual(self.act(ticket, 'confirmations', self.submitter, result_round=1,
+                                      outcome='unresolved', note=invalid_note)[0], 422)
+        ticket = self.success(ticket, 'confirmations', self.submitter, result_round=1,
+                              outcome='unresolved', note=' 仍然无法连接 ')
+        self.assertEqual(self.detail(ticket)['history'][-1]['note'], '仍然无法连接')
         self.assertEqual(ticket['status'], 'in_progress')
         self.assertIsNone(ticket['closed_at'])
         ticket = self.success(ticket, 'results', self.handler, result='第二次修复')
@@ -56,12 +61,14 @@ class TicketResolutionTests(TicketHTTPTestCase):
         stale_round = self.act(ticket, 'confirmations', self.submitter, result_round=1, outcome='resolved')
         self.assertEqual(stale_round[1]['detail']['code'], 'result_round_conflict')
         awaiting = ticket
-        ticket = self.success(ticket, 'confirmations', self.submitter, result_round=2, outcome='resolved')
+        ticket = self.success(ticket, 'confirmations', self.submitter, result_round=2,
+                              outcome='resolved', note=' 员工确认恢复 ')
         self.assertEqual(ticket['status'], 'closed')
         self.assertEqual(ticket['closed_at'], ticket['confirmed_at'])
         self.assertIsNone(ticket['cancelled_at'])
         self.assertEqual(self.act(awaiting, 'confirmations', self.submitter, result_round=2, outcome='unresolved')[0], 409)
         detail = self.detail(ticket)
+        self.assertEqual(detail['history'][-1]['note'], '员工确认恢复')
         self.assertEqual([r['confirmation'] for r in detail['results']], ['unresolved', 'resolved'])
         self.assertEqual(detail['results'][0]['content'], '第一次修复')
         self.assertEqual(detail['results'][1]['confirmed_at'], ticket['closed_at'])
@@ -284,7 +291,7 @@ class TicketResolutionTests(TicketHTTPTestCase):
         initialize_database(legacy)
         with connect(legacy) as connection:
             row = dict(connection.execute('SELECT * FROM tickets WHERE id = ?', (ticket['id'],)).fetchone())
-            self.assertEqual(row, {k: v for k, v in ticket.items() if k not in ('previous_ticket_id', 'cancellation_requires_approval')})
+            self.assertEqual(row, {key: ticket[key] for key in row})
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_history').fetchone()[0], 3)
             self.assertGreater(connection.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 0)
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 5)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], SCHEMA_VERSION)

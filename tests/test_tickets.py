@@ -1,11 +1,12 @@
 import sqlite3
 import threading
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
 
 from app.auth import get_connection
-from app.database import SCHEMA, connect, initialize_database
+from app.database import SCHEMA, SCHEMA_VERSION, connect, initialize_database
 from tests.test_foundation import HTTPTestCase
 
 
@@ -27,6 +28,78 @@ class TicketHTTPTestCase(HTTPTestCase):
 
 
 class TicketTests(TicketHTTPTestCase):
+    def test_mine_scope_restricts_multirole_list_detail_and_pagination(self):
+        token = self.login('dispatcher')
+        other = self.login()
+        own = [self.ticket(token) for _ in range(2)]
+        visible_other = self.ticket(other)
+        self.assertEqual(self.request('/api/v1/tickets', token=token)[1]['total'], 3)
+        status, result, _ = self.request('/api/v1/tickets?scope=mine&limit=1&offset=1', token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(len(result['items']), 1)
+        self.assertIn(result['items'][0]['id'], [item['id'] for item in own])
+        detail_url = f"/api/v1/tickets/{visible_other['id']}"
+        self.assertEqual(self.request(detail_url, token=token)[0], 200)
+        self.assertEqual(self.request(detail_url + '?scope=mine', token=token)[0], 404)
+        query = urlencode({'scope': 'mine', 'q': visible_other['id']})
+        self.assertEqual(self.request('/api/v1/tickets?' + query, token=token)[1]['total'], 0)
+        self.assertEqual(self.request(f"/api/v1/tickets/{own[0]['id']}?scope=mine", token=token)[0], 200)
+        for url in ('/api/v1/tickets', detail_url):
+            self.assertEqual(self.request(url + '?scope=mine')[0], 401)
+            self.assertEqual(self.request(url + '?scope=invalid', token=token)[0], 422)
+        with connect(self.path) as connection, connection:
+            connection.execute("DELETE FROM user_roles WHERE user_id = 'test-dispatcher' AND role = 'submitter'")
+        self.assertEqual(self.request('/api/v1/tickets?scope=mine', token=token)[0], 403)
+
+    def test_description_and_system_search_preserves_scope_and_totals(self):
+        token = self.login()
+        other = self.login('submitter_other')
+        own = [self.ticket(token) for _ in range(2)]
+        hidden = self.ticket(other)
+        with connect(self.path) as connection, connection:
+            connection.execute("UPDATE service_systems SET name = 'PLM测试系统' WHERE id = 'test-office'")
+            connection.execute("UPDATE tickets SET description = '仅描述包含 ConnectionLost' WHERE id IN (?, ?)",
+                               (own[0]['id'], hidden['id']))
+        query = urlencode({'q': 'connectionlost', 'scope': 'mine'})
+        result = self.request('/api/v1/tickets?' + query, token=token)[1]
+        self.assertEqual([item['id'] for item in result['items']], [own[0]['id']])
+        query = urlencode({'q': 'plm', 'scope': 'mine', 'limit': 1, 'offset': 1})
+        result = self.request('/api/v1/tickets?' + query, token=token)[1]
+        self.assertEqual((result['total'], len(result['items'])), (2, 1))
+        self.assertNotEqual(result['items'][0]['id'], hidden['id'])
+
+    def test_response_aliases_times_and_optional_engineer_mapping(self):
+        token = self.login()
+        ticket = self.ticket(token)
+        self.assertEqual(ticket['ticket_id'], ticket['id'])
+        self.assertIsNone(ticket['engineer_employee_no'])
+        for field in ('created_at', 'updated_at'):
+            self.assertIsInstance(ticket[field], int)
+            self.assertTrue(ticket[field + '_iso'].endswith('+08:00'))
+            self.assertEqual(int(datetime.fromisoformat(ticket[field + '_iso']).timestamp()), ticket[field])
+        with connect(self.path) as connection, connection:
+            connection.execute("""INSERT INTO iam_profiles
+                (user_id, iam_user_id, employee_number, refreshed_at) VALUES (?, ?, ?, ?)""",
+                ('test-handler', 'iam-handler-fixture', '000123', 0))
+        dispatcher = self.login('dispatcher')
+        url = f"/api/v1/tickets/{ticket['id']}"
+        code, assigned, _ = self.request(url + '/assignments', 'POST',
+                                         {'expected_version': ticket['version'], 'assignee_id': 'test-handler'}, dispatcher)
+        self.assertEqual(code, 200)
+        self.assertEqual(assigned['engineer_employee_no'], '000123')
+        detail = self.request(url, token=token)[1]
+        listed = self.request('/api/v1/tickets?scope=mine', token=token)[1]['items'][0]
+        for item in (assigned, detail, listed):
+            self.assertEqual(item['ticket_id'], ticket['id'])
+            self.assertEqual(item['engineer_employee_no'], '000123')
+            self.assertEqual(item['system'], '测试办公系统')
+        code, reassigned, _ = self.request(url + '/reassignments', 'POST',
+                                           {'expected_version': assigned['version'], 'assignee_id': 'test-handler_backup',
+                                            'reason': '改派到未关联IAM账号'}, dispatcher)
+        self.assertEqual(code, 200)
+        self.assertIsNone(reassigned['engineer_employee_no'])
+
     def test_intake_base_location_is_saved_without_changing_account_or_retry(self):
         token = self.login()
         with connect(self.path) as connection, connection:
@@ -348,7 +421,7 @@ class TicketTests(TicketHTTPTestCase):
         initialize_database(legacy)
         initialize_database(legacy)
         with connect(legacy) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(connection.execute("SELECT display_name, password_salt, password_hash FROM users").fetchone()[:], ("已有账号", b'\x01', b'\x02'))
             for table in ("roles", "user_roles", "support_groups", "user_group_scopes", "service_systems", "sessions"):
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0], 1)

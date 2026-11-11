@@ -3,7 +3,7 @@
 // Authentication and drafts belong to this page instance, so accounts cannot share them.
 const state = { token: null, user: null, ticket: null, systems: [], conversation: null,
   previousTicket: null, offset: 0, total: 0, busy: false, view: "tickets",
-  filters: {}, detailView: "overview" };
+  filters: {}, detailView: "overview", intakeFiles: [] };
 const $ = (id) => document.getElementById(id);
 const statusNames = { pending_assignment: "待分派", pending_acceptance: "待接单",
   in_progress: "处理中", awaiting_confirmation: "待员工确认", closed: "已关闭", cancelled: "已撤销" };
@@ -12,7 +12,7 @@ const roleNames = { submitter: "提交人", dispatcher: "分派人员", handler:
 const actionNames = { created: "创建工单", assigned: "分派", reassigned: "改派", accepted: "接单",
   note_added: "公开处理备注", result_submitted: "提交处理结果", confirmed_unresolved: "确认未解决",
   confirmed_resolved: "确认解决并关闭", cancelled: "撤销工单", cancellation_requested: "申请撤销",
-  cancellation_approved: "批准撤销", cancellation_rejected: "驳回撤销" };
+  cancellation_approved: "批准撤销", cancellation_rejected: "驳回撤销", attachments_added: "追加附件" };
 const ratingNames = { good: "好评", neutral: "中评", bad: "差评" };
 const decisionNames = { pending: "待审批", approved: "已批准", rejected: "已驳回", superseded: "工单已结束" };
 const sourceNames = { active: "员工主动评价", automatic: "到期自动好评" };
@@ -44,7 +44,7 @@ function message(text, error = false) {
 function clearSession() {
   document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
   Object.assign(state, { token: null, user: null, ticket: null, systems: [],
-    conversation: null, previousTicket: null, offset: 0, total: 0, view: "tickets", filters: {} });
+    conversation: null, previousTicket: null, offset: 0, total: 0, view: "tickets", filters: {}, intakeFiles: [] });
   $("filter-form").reset();
   $("workspace").hidden = true;
   $("login-panel").hidden = false;
@@ -53,19 +53,22 @@ function clearSession() {
   $("statistics").replaceChildren();
   $("ticket-form").reset();
   $("login-form").reset();
+  $("employee-login-form").reset();
 }
 
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, responseType = "json") {
+  const multipart = body instanceof FormData;
   let response;
   try {
-    response = await fetch(path, { method, signal: AbortSignal.timeout(15000), headers: {
-      "Content-Type": "application/json",
+    response = await fetch(path, { method, signal: AbortSignal.timeout(multipart ? 60000 : 15000), headers: {
+      ...(!multipart ? { "Content-Type": "application/json" } : {}),
       ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
-    }, body: body === undefined ? undefined : JSON.stringify(body) });
+    }, body: body === undefined ? undefined : multipart ? body : JSON.stringify(body) });
   } catch {
     throw new Error("连接失败。操作结果需刷新核对，建单可用原会话重试。");
   }
-  const result = response.status === 204 ? null : await response.json();
+  const result = response.status === 204 ? null
+    : response.ok && responseType === "blob" ? await response.blob() : await response.json();
   if (!response.ok) {
     if (response.status === 401) clearSession();
     const detail = result?.detail;
@@ -74,6 +77,27 @@ async function api(path, method = "GET", body) {
     throw error;
   }
   return result;
+}
+
+async function uploadFiles(files) {
+  if (!files.length || files.length > 5 || [...files].some((file) => !file.size || file.size > 10 * 1024 * 1024)) {
+    throw new Error("请选择1～5个非空文件，单文件最多10 MiB。");
+  }
+  const body = new FormData();
+  for (const file of files) body.append("files", file);
+  return (await api("/api/v1/attachments", "POST", body)).items.map((file) => file.file_id);
+}
+
+async function downloadFile(file) {
+  const blob = await api(`/api/v1/attachments/${encodeURIComponent(file.file_id)}`, "GET", undefined, "blob");
+  const url = URL.createObjectURL(blob);
+  const link = element("a");
+  link.href = url;
+  link.download = file.file_name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function run(work) {
@@ -110,6 +134,7 @@ function newConversation(previousTicket = null) {
   $("detail-dialog").close();
   state.conversation = null;
   state.previousTicket = previousTicket;
+  state.intakeFiles = [];
   $("ticket-form").reset();
   updateConversation();
   if (!$("intake").open) $("intake").showModal();
@@ -124,6 +149,11 @@ function updateIntakeProfile() {
   }
   $("intake-location").options[0].textContent = state.user.location
     ? `使用账号 Base 地（${state.user.location}）` : "请选择（可选）";
+  const profile = state.user.iam_profile;
+  $("refresh-iam-profile").hidden = !profile?.refresh_available;
+  $("intake-profile-note").textContent = profile
+    ? `工号 ${profile.employee_number} · 人员资料更新于 ${timeText(profile.refreshed_at)}${profile.stale ? "，当前使用已保存资料，可更新本人资料。" : ""}`
+    : "人员资料由当前登录账号带入。";
 }
 
 async function loadList() {
@@ -354,8 +384,46 @@ async function renderDetail() {
     ["撤销时间", timeText(ticket.cancelled_at)], ["部门", ticket.department], ["邮箱", ticket.email],
     ["提单人 Base 地", ticket.location], ["关联旧单", ticket.previous_ticket_id]]);
   box.append(element("h3", "问题描述"), element("p", ticket.description, "prose"));
+  box.append(element("h3", "附件"));
+  if (!ticket.files.length) box.append(element("p", "暂无附件。", "muted"));
+  for (const file of ticket.files) {
+    box.append(button(`${file.file_name}（${(file.size / 1024).toFixed(1)} KiB）`,
+      () => downloadFile(file), "secondary attachment-download"));
+  }
   box = actions;
   const own = hasRole("submitter") && ticket.submitter_id === state.user.id;
+  if (own && !["closed", "cancelled"].includes(ticket.status)) {
+    const form = element("form", null, "action-form");
+    const label = element("label", "追加附件（每次最多5个，单文件最多10 MiB）");
+    const input = element("input");
+    input.type = "file";
+    input.multiple = true;
+    input.required = true;
+    label.append(input);
+    const submit = element("button", "追加附件");
+    submit.type = "submit";
+    form.append(label, submit);
+    let uploaded = [];
+    input.addEventListener("change", () => { uploaded = []; });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      run(async () => {
+        if (!uploaded.length) uploaded = await uploadFiles(input.files);
+        try {
+          await api(`${ticketPath(ticket.id)}/attachments`, "POST", {
+            expected_version: ticket.version, file_ids: uploaded,
+          });
+        } catch (error) {
+          if (error.status === 409) await loadDetail(ticket.id);
+          throw error;
+        }
+        await loadDetail(ticket.id);
+        await loadList();
+        message("附件已追加到原工单。");
+      });
+    });
+    box.append(form);
+  }
   const handler = hasRole("handler") && ticket.assignee_id === state.user.id;
   const dispatcher = hasRole("dispatcher") && (state.user.group_scopes.dispatcher || []).includes(ticket.group_id);
   const reason = { name: "reason", label: "原因（必填）" };
@@ -457,20 +525,28 @@ async function renderDetail() {
   }
 }
 
-$("login-form").addEventListener("submit", (event) => {
+function submitLogin(event) {
   event.preventDefault();
   const credentials = Object.fromEntries(new FormData(event.target));
   run(async () => {
     const result = await api("/api/v1/auth/login", "POST", credentials);
     state.token = result.access_token;
     $("login-form").reset();
+    $("employee-login-form").reset();
     try { await refresh(); } catch (error) { clearSession(); throw error; }
     $("login-panel").hidden = true;
     $("workspace").hidden = false;
     updateConversation();
-    message("登录成功，当前只展示此账号授权范围内的工单和操作。");
+    message(result.profile_warning || "登录成功，当前只展示此账号授权范围内的工单和操作。", Boolean(result.profile_warning));
   });
-});
+}
+$("login-form").addEventListener("submit", submitLogin);
+$("employee-login-form").addEventListener("submit", submitLogin);
+$("refresh-iam-profile").addEventListener("click", () => run(async () => {
+  await api("/api/v1/me/profile/refresh", "POST");
+  await refresh();
+  message("本人资料已更新，后续新工单使用更新后的资料。");
+}));
 
 $("ticket-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -479,6 +555,10 @@ $("ticket-form").addEventListener("submit", (event) => {
     if (!state.conversation) state.conversation = await api("/api/v1/conversations", "POST",
       state.previousTicket ? { previous_ticket_id: state.previousTicket } : {});
     updateConversation();
+    if (!state.conversation.ticket_id && $("intake-attachments").files.length && !state.intakeFiles.length) {
+      state.intakeFiles = await uploadFiles($("intake-attachments").files);
+    }
+    body.file_ids = state.intakeFiles;
     const ticket = await api(`/api/v1/conversations/${encodeURIComponent(state.conversation.id)}/ticket`, "POST", body);
     state.conversation.ticket_id = ticket.id;
     updateConversation();
@@ -489,6 +569,8 @@ $("ticket-form").addEventListener("submit", (event) => {
     message("已取得当前会话工单。同一会话重试会返回原工单，其他报障请开始新会话。");
   });
 });
+
+$("intake-attachments").addEventListener("change", () => { state.intakeFiles = []; });
 
 $("refresh").addEventListener("click", () => run(async () => { await refresh(); message("工作台已刷新。"); }));
 $("logout").addEventListener("click", () => run(async () => {
@@ -537,6 +619,14 @@ $("previous").addEventListener("click", () => run(async () => { state.offset = M
 $("next").addEventListener("click", () => run(async () => { state.offset += 10; await loadList(); }));
 
 run(async () => {
+  const options = await api("/api/v1/auth/login-options");
+  const password = $("employee-login-form").elements.password;
+  password.disabled = options.employee_passwordless;
+  password.required = !options.employee_passwordless;
+  $("employee-password-label").hidden = options.employee_passwordless;
+  $("employee-login-note").textContent = options.employee_passwordless
+    ? "免密测试模式：输入工号即可进入，首次登录会查询 IAM 人员资料。"
+    : "使用已导入的员工账号和设置的密码登录。";
   const result = await api("/api/v1/auth/test-accounts");
   const select = $("test-accounts");
   const placeholder = element("option", result.items.length ? "请选择测试账号" : "暂无可用测试账号，请先执行初始化命令");

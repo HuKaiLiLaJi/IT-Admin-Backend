@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import uvicorn
 
 from app.auth import password_key, session_key
-from app.database import connect, initialize_database
+from app.database import SCHEMA_VERSION, connect, initialize_database
 from app.main import create_app
 from app.seed import TEST_PASSWORD, seed_test_data
 
@@ -94,7 +94,7 @@ class FoundationTests(HTTPTestCase):
         initialize_database(empty_path)
         with connect(empty_path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 0)
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
     def test_login_identity_logout_and_token_storage(self):
@@ -253,11 +253,11 @@ class FoundationTests(HTTPTestCase):
 
     def test_newer_schema_is_rejected_without_rewriting(self):
         with connect(self.path) as connection, connection:
-            connection.execute("PRAGMA user_version = 6")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
         with self.assertRaises(RuntimeError):
             initialize_database(self.path)
         with connect(self.path) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION + 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 9)
 
 

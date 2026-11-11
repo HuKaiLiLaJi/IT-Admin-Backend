@@ -1,12 +1,13 @@
 """Console launcher for the local service desk."""
 
+import os
 import socket
 import threading
 import webbrowser
 
 import uvicorn
 
-from app.database import database_path
+from app.database import PROJECT_ROOT, database_path
 
 
 HOST = "127.0.0.1"
@@ -26,6 +27,10 @@ def open_when_ready(server, stopped, url):
 
 
 def main():
+    os.environ.setdefault("IT_ADMIN_IAM_PASSWORDLESS", "1")
+    config = PROJECT_ROOT / "IAM系统授权信息工单系统.md"
+    if config.is_file():
+        os.environ.setdefault("IT_ADMIN_IAM_CONFIG", str(config))
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         try:
             # Reserve the port until Uvicorn takes over this same socket.

@@ -5,6 +5,7 @@ body { margin: 0; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; border: 1px solid transparent; border-radius: 5px; padding: 8px 15px; background: var(--primary); color: white; white-space: nowrap; line-height: 1.5; }
 button.secondary { background: white; border-color: #dce2eb; color: #48556a; }
+button.attachment-download { display: block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; margin-bottom: 8px; }
 button.text-button { background: transparent; color: #657389; padding: 8px; }
 button:hover:enabled { filter: brightness(.95); }
 button:disabled { opacity: .4; cursor: default; }

@@ -71,6 +71,17 @@
           <p class="login-note">
             测试阶段免密码登录，刷新页面后需重新选择账号。
           </p>
+          <details>
+            <summary>员工工号登录</summary>
+            <form id="employee-login-form">
+              <fieldset>
+                <label>工号<input name="username" required maxlength="64" autocomplete="username"></label>
+                <label id="employee-password-label" hidden>密码<input name="password" type="password" disabled maxlength="256" autocomplete="current-password"></label>
+                <p id="employee-login-note" class="intake-hint">正在读取登录方式…</p>
+                <button type="submit">登录</button>
+              </fieldset>
+            </form>
+          </details>
         </section>
       </section>
       <div id="workspace" class="app-shell" hidden>
@@ -185,9 +196,9 @@
               <form id="filter-form" class="filters">
                 <label class="search-label">
                   <span class="sr-only">
-                    搜索标题或完整工单编号
+                    关键词
                   </span>
-                  <input id="search" name="q" maxlength="200" placeholder="搜索标题或完整工单编号">
+                  <input id="search" name="q" maxlength="200" placeholder="标题、描述、运维系统或完整编号">
                 </label>
                 <label>
                   <span class="sr-only">
@@ -332,6 +343,7 @@
                 </label>
               </div>
               <p id="intake-profile-note" class="intake-hint">人员资料由当前登录账号带入。</p>
+              <button id="refresh-iam-profile" type="button" class="secondary" hidden>更新本人资料</button>
               <p id="intake-location-note" class="intake-hint">Base 地选项为测试占位，正式内容待确认。</p>
             </fieldset>
             <fieldset>
@@ -367,9 +379,9 @@
               </label>
               <label>
                 相关文档附件
-                <input type="file" id="intake-attachments" disabled aria-describedby="intake-attachments-note">
+                <input type="file" id="intake-attachments" multiple aria-describedby="intake-attachments-note">
               </label>
-              <p id="intake-attachments-note" class="intake-hint">附件入口为界面占位，上传功能待接入。</p>
+              <p id="intake-attachments-note" class="intake-hint">每次最多5个文件，单文件最多10 MiB。提交时上传并绑定到工单。</p>
               <div class="buttons">
                 <button type="submit" id="submit-ticket">
                   提交工单

@@ -3,7 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from app.database import SCHEMA, TICKET_SCHEMA, connect, initialize_database
+from app.database import SCHEMA, SCHEMA_VERSION, TICKET_SCHEMA, connect, initialize_database
 from tests.test_tickets import TicketHTTPTestCase
 
 
@@ -203,11 +203,10 @@ class TicketActionTests(TicketHTTPTestCase):
         initialize_database(legacy)
         with connect(legacy) as connection:
             row = connection.execute("SELECT * FROM tickets WHERE id = ?", (ticket["id"],)).fetchone()
-            for field, value in ticket.items():
-                if field not in ("previous_ticket_id", "cancellation_requires_approval"):
-                    self.assertEqual(row[field], value)
+            for field in row.keys():
+                self.assertEqual(row[field], ticket[field])
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM ticket_history").fetchone()[0], 1)
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         broken = Path(self.directory.name) / "broken.sqlite3"
         with connect(broken) as connection, connection:
             for statement in (*SCHEMA, *TICKET_SCHEMA):

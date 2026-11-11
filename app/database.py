@@ -6,7 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "backend.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
 SCHEMA = (
     """CREATE TABLE users (
@@ -169,6 +169,34 @@ EVALUATION_SCHEMA = (
 )
 
 
+ATTACHMENT_SCHEMA = (
+    """CREATE TABLE attachments (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id),
+        ticket_id TEXT REFERENCES tickets(id),
+        file_name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size INTEGER NOT NULL CHECK (size > 0 AND size <= 10485760),
+        content BLOB NOT NULL CHECK (length(content) = size),
+        created_at INTEGER NOT NULL
+    )""",
+    "CREATE INDEX attachments_ticket ON attachments(ticket_id, created_at, id)",
+)
+
+
+IAM_SCHEMA = (
+    """CREATE TABLE iam_profiles (
+        user_id TEXT PRIMARY KEY REFERENCES users(id),
+        iam_user_id TEXT NOT NULL UNIQUE,
+        employee_number TEXT NOT NULL UNIQUE,
+        qywx_id TEXT UNIQUE,
+        department_code TEXT,
+        work_title TEXT,
+        refreshed_at INTEGER NOT NULL
+    )""",
+)
+
+
 def database_path() -> Path:
     configured = Path(os.environ.get("IT_ADMIN_DATABASE", DEFAULT_DATABASE_PATH))
     if not configured.is_absolute():
@@ -217,3 +245,11 @@ def initialize_database(path: Path) -> None:
             for statement in EVALUATION_SCHEMA:
                 connection.execute(statement)
             connection.execute("PRAGMA user_version = 5")
+        if version < 6:
+            for statement in ATTACHMENT_SCHEMA:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version = 6")
+        if version < 7:
+            for statement in IAM_SCHEMA:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version = 7")

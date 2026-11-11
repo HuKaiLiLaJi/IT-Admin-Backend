@@ -2,11 +2,13 @@
 
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from typing import Literal
 from uuid import uuid4
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -15,12 +17,15 @@ from app.auth import (
     require_group_scope, require_role,
 )
 from app.evaluations import evaluation_deadline, expiration_cutoff, save_evaluation
+from app.attachments import FILE_COLUMNS, MAX_FILES, bind_files, read_uploads, ticket_files
 
 
 router = APIRouter(prefix="/api/v1")
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Description = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=10000)]
+TicketScope = Literal['visible', 'mine']
+BEIJING_TIME = timezone(timedelta(hours=8))
 
 
 class ConversationRequest(BaseModel):
@@ -36,6 +41,7 @@ class TicketRequest(BaseModel):
     title: Title
     description: Description
     location: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
+    file_ids: list[Identifier] = Field(default_factory=list, max_length=MAX_FILES)
 
 
 class ActionRequest(BaseModel):
@@ -46,6 +52,10 @@ class ActionRequest(BaseModel):
 
 class AssignmentRequest(ActionRequest):
     assignee_id: Identifier
+
+
+class AttachmentRequest(ActionRequest):
+    file_ids: list[Identifier] = Field(min_length=1, max_length=MAX_FILES)
 
 
 class NoteRequest(ActionRequest):
@@ -63,6 +73,7 @@ class ResultRequest(ActionRequest):
 class ConfirmationRequest(ActionRequest):
     result_round: int = Field(ge=1)
     outcome: Literal['resolved', 'unresolved']
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=10000)] | None = None
 
 
 class CancellationRequest(ActionRequest):
@@ -120,7 +131,11 @@ def check_previous_ticket(connection: sqlite3.Connection, ticket_id: str | None,
         })
 
 
-def ticket_visibility(user: Principal) -> tuple[str, list[str]]:
+def ticket_visibility(user: Principal, scope: TicketScope = 'visible') -> tuple[str, list[str]]:
+    if scope == 'mine':
+        if 'submitter' not in user.roles:
+            raise forbidden()
+        return "t.submitter_id = ?", [user.id]
     clauses = ["0"]
     values = []
     if "submitter" in user.roles:
@@ -138,14 +153,24 @@ def ticket_visibility(user: Principal) -> tuple[str, list[str]]:
 
 
 # Keep the old-ticket link in the conversation, shared by detail and list responses.
-TICKET_SELECT = """SELECT t.*, c.previous_ticket_id,
+TICKET_SELECT = """SELECT t.*, t.id AS ticket_id, s.name AS system,
+                   p.employee_number AS engineer_employee_no, c.previous_ticket_id,
                    (t.accepted_at IS NOT NULL OR t.result_round > 0
                     OR t.status IN ('in_progress', 'awaiting_confirmation') OR EXISTS (
                         SELECT 1 FROM ticket_history h WHERE h.ticket_id = t.id
                         AND (h.from_status IN ('in_progress', 'awaiting_confirmation')
                              OR h.to_status IN ('in_progress', 'awaiting_confirmation'))
                     )) AS cancellation_requires_approval FROM tickets t
-                   JOIN conversations c ON c.id = t.conversation_id"""
+                   JOIN conversations c ON c.id = t.conversation_id
+                   LEFT JOIN service_systems s ON s.id = t.service_system_id
+                   LEFT JOIN iam_profiles p ON p.user_id = t.assignee_id"""
+
+
+def ticket_response(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    for field in ('created_at', 'updated_at'):
+        result[field + '_iso'] = datetime.fromtimestamp(result[field], BEIJING_TIME).isoformat()
+    return result
 
 
 @router.post("/conversations", status_code=201)
@@ -187,7 +212,7 @@ def create_ticket(
     ).fetchone()
     if existing is not None:
         response.status_code = 200
-        return dict(existing)
+        return {**ticket_response(existing), "files": ticket_files(connection, existing["id"])}
     check_previous_ticket(connection, conversation["previous_ticket_id"], user.id)
     system = connection.execute(
         """SELECT s.group_id FROM service_systems s JOIN support_groups g ON g.id = s.group_id
@@ -210,8 +235,9 @@ def create_ticket(
         """INSERT INTO ticket_history (ticket_id, action, actor_id, from_status, to_status, created_at)
            VALUES (?, 'created', ?, NULL, 'pending_assignment', ?)""", (ticket_id, user.id, now),
     )
-    result = dict(connection.execute(TICKET_SELECT + " WHERE t.id = ?", (ticket_id,)).fetchone())
-    return result
+    bind_files(connection, body.file_ids, user.id, ticket_id)
+    result = ticket_response(connection.execute(TICKET_SELECT + " WHERE t.id = ?", (ticket_id,)).fetchone())
+    return {**result, "files": ticket_files(connection, ticket_id)}
 
 
 @router.get("/tickets")
@@ -223,11 +249,16 @@ def list_tickets(
     status: Literal['pending_assignment', 'pending_acceptance', 'in_progress',
                     'awaiting_confirmation', 'closed', 'cancelled'] | None = None,
     service_system_id: Annotated[str | None, Query(max_length=128)] = None,
+    scope: TicketScope = 'visible',
 ):
-    predicate, values = ticket_visibility(user)
+    predicate, values = ticket_visibility(user, scope)
     if q and q.strip():
-        predicate += " AND (instr(lower(t.title), lower(?)) > 0 OR t.id = ?)"
-        values.extend([q.strip(), q.strip()])
+        predicate += """ AND (instr(lower(t.title), lower(?)) > 0 OR t.id = ?
+                        OR instr(lower(t.description), lower(?)) > 0 OR EXISTS (
+                            SELECT 1 FROM service_systems search_system
+                            WHERE search_system.id = t.service_system_id
+                            AND instr(lower(search_system.name), lower(?)) > 0))"""
+        values.extend([q.strip()] * 4)
     if status is not None:
         predicate += " AND t.status = ?"
         values.append(status)
@@ -241,12 +272,12 @@ def list_tickets(
             TICKET_SELECT + " WHERE " + predicate + " ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?",
             [*values, limit, offset],
         ).fetchall()
-    return {"items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+    return {"items": [ticket_response(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/tickets/{ticket_id}")
-def get_ticket(ticket_id: str, user: CurrentUser, connection: Database):
-    predicate, values = ticket_visibility(user)
+def get_ticket(ticket_id: str, user: CurrentUser, connection: Database, scope: TicketScope = 'visible'):
+    predicate, values = ticket_visibility(user, scope)
     with connection:
         connection.execute("BEGIN")
         row = connection.execute(TICKET_SELECT + " WHERE t.id = ? AND " + predicate, [ticket_id, *values]).fetchone()
@@ -267,8 +298,9 @@ def get_ticket(ticket_id: str, user: CurrentUser, connection: Database):
         evaluation_history = connection.execute(
             'SELECT * FROM evaluation_history WHERE ticket_id = ? ORDER BY id', (ticket_id,),
         ).fetchall()
+        files = ticket_files(connection, ticket_id)
         deadline = evaluation_deadline(row['closed_at']) if row['status'] == 'closed' and row['closed_at'] is not None else None
-    return {**dict(row), "history": [dict(event) for event in history],
+    return {**ticket_response(row), "files": files, "history": [dict(event) for event in history],
             "results": [dict(result) for result in results],
             "cancellation_requests": [dict(request) for request in cancellations],
             "evaluation": dict(evaluation) if evaluation is not None else None,
@@ -363,7 +395,69 @@ def save_action(
                decision_reason = ?, decided_at = ? WHERE ticket_id = ? AND status = 'pending'""",
             (user.id, '工单已结束', now, ticket['id']),
         )
-    return dict(connection.execute(TICKET_SELECT + " WHERE t.id = ?", (ticket["id"],)).fetchone())
+    return ticket_response(connection.execute(TICKET_SELECT + " WHERE t.id = ?", (ticket["id"],)).fetchone())
+
+
+@router.post("/attachments", status_code=201, openapi_extra={
+    "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
+        "type": "object", "required": ["files"], "properties": {
+            "files": {"type": "array", "minItems": 1, "maxItems": MAX_FILES,
+                      "items": {"type": "string", "format": "binary"}},
+        },
+    }}}},
+})
+async def upload_attachments(
+    request: Request, user: CurrentUser, connection: Database,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+):
+    mutation_submitter(user)
+    uploads = await read_uploads(request)
+    # Recheck identity after receiving the body and acquiring the write lock.
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        user = mutation_submitter(get_current_user(connection, credentials))
+        items = []
+        for name, content_type, content in uploads:
+            file_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO attachments (id, owner_id, file_name, content_type, size, content, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (file_id, user.id, name, content_type, len(content), content, int(time.time())),
+            )
+            items.append(dict(connection.execute(
+                f"SELECT {FILE_COLUMNS} FROM attachments WHERE id = ?", (file_id,),
+            ).fetchone()))
+    return {"items": items}
+
+
+@router.get("/attachments/{file_id}")
+def download_attachment(file_id: str, user: CurrentUser, connection: Database):
+    predicate, values = ticket_visibility(user)
+    row = connection.execute(
+        """SELECT a.content, a.file_name FROM attachments a WHERE a.id = ? AND (
+            (a.ticket_id IS NULL AND a.owner_id = ?) OR a.ticket_id IN (
+                SELECT t.id FROM tickets t WHERE """ + predicate + "))",
+        [file_id, user.id, *values],
+    ).fetchone()
+    if row is None:
+        raise missing_resource()
+    return Response(content=row["content"], media_type="application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(row['file_name'], safe='')}",
+    })
+
+
+@router.post("/tickets/{ticket_id}/attachments")
+def append_attachments(ticket_id: str, body: AttachmentRequest, user: ActionUser, connection: Database):
+    ticket = action_ticket(connection, user, ticket_id)
+    require_ticket_submitter(ticket, user)
+    check_action(ticket, body.expected_version,
+                 ("pending_assignment", "pending_acceptance", "in_progress", "awaiting_confirmation"))
+    added = bind_files(connection, body.file_ids, user.id, ticket_id)
+    result = ticket_response(ticket)
+    if added:
+        result = save_action(connection, ticket, user, "attachments_added", ticket["status"],
+                             ticket["assignee_id"], f"追加{added}个附件")
+    return {**result, "files": ticket_files(connection, ticket_id)}
 
 
 @router.get("/support-groups/{group_id}/handlers")
@@ -452,7 +546,8 @@ def confirm_result(ticket_id: str, body: ConfirmationRequest, user: ActionUser, 
             'code': 'result_round_conflict', 'message': '处理结果轮次已变化，请重新读取',
         })
     status = 'closed' if body.outcome == 'resolved' else 'in_progress'
-    updated = save_action(connection, ticket, user, 'confirmed_' + body.outcome, status, ticket['assignee_id'])
+    updated = save_action(connection, ticket, user, 'confirmed_' + body.outcome, status,
+                          ticket['assignee_id'], body.note or None)
     connection.execute(
         """UPDATE ticket_results SET confirmation = ?, confirmed_by = ?, confirmed_at = ?
            WHERE ticket_id = ? AND round = ?""",
@@ -544,7 +639,7 @@ def evaluate_ticket(ticket_id: str, body: EvaluationRequest, user: ActionUser, c
             'code': 'evaluation_reason_required', 'message': '中评和差评必须填写原因',
         })
     save_evaluation(connection, ticket, body.rating, body.reason or None, 'active', user.id, now)
-    return dict(connection.execute(TICKET_SELECT + ' WHERE t.id = ?', (ticket_id,)).fetchone())
+    return ticket_response(connection.execute(TICKET_SELECT + ' WHERE t.id = ?', (ticket_id,)).fetchone())
 
 
 @router.get('/evaluation-statistics')

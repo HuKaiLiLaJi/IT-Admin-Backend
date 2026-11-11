@@ -35,7 +35,7 @@ class LauncherTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'launcher.sqlite3'
-            with patch.dict(os.environ, {'IT_ADMIN_DATABASE': str(path)}), \
+            with patch.dict(os.environ, {'IT_ADMIN_DATABASE': str(path), 'IT_ADMIN_IAM_CONFIG': ''}), \
                     patch.object(launcher, 'PORT', 0), \
                     patch.object(launcher.uvicorn, 'Server', side_effect=server_factory), \
                     patch.object(launcher.webbrowser, 'open', side_effect=open_browser) as opened:
@@ -48,7 +48,7 @@ class LauncherTests(unittest.TestCase):
         with socket.socket() as listener:
             listener.bind((launcher.HOST, 0))
             listener.listen()
-            with patch.object(launcher, 'PORT', listener.getsockname()[1]), \
+            with patch.dict(os.environ), patch.object(launcher, 'PORT', listener.getsockname()[1]), \
                     patch.object(launcher.webbrowser, 'open') as opened:
                 self.assertEqual(launcher.main(), 1)
                 opened.assert_not_called()

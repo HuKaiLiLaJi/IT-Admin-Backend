@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.database import connect, initialize_database
+from app.database import SCHEMA_VERSION, connect, initialize_database
 from app.evaluations import BEIJING, evaluation_deadline, expire_evaluations
 from tests.test_tickets import TicketHTTPTestCase
 
@@ -217,6 +217,8 @@ class EvaluationTests(TicketHTTPTestCase):
         legacy = Path(self.directory.name) / 'legacy.sqlite3'
         with connect(self.path) as source, connect(legacy) as destination, destination:
             source.backup(destination)
+            destination.execute('DROP TABLE iam_profiles')
+            destination.execute('DROP TABLE attachments')
             destination.execute('DROP TABLE evaluation_history')
             destination.execute('DROP TABLE ticket_evaluations')
             destination.execute('DROP INDEX tickets_closed')
@@ -233,9 +235,9 @@ class EvaluationTests(TicketHTTPTestCase):
         initialize_database(legacy)
         initialize_database(legacy)
         with connect(legacy) as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 5)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], SCHEMA_VERSION)
             row = dict(connection.execute('SELECT * FROM tickets WHERE id = ?', (ticket['id'],)).fetchone())
-            self.assertEqual(row, {k: v for k, v in ticket.items() if k not in ('previous_ticket_id', 'cancellation_requires_approval')})
+            self.assertEqual(row, {key: ticket[key] for key in row})
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_history').fetchone()[0], 5)
             self.assertEqual(connection.execute('SELECT COUNT(*) FROM ticket_evaluations').fetchone()[0], 0)
 
